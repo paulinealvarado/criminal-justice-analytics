@@ -1,0 +1,634 @@
+---
+title: "Working with Geography: Los Angeles Gang Injunction Maps and Crime"
+author: "Pauline I. Alvarado"
+date: "5/25/2019"
+output: pdf_document
+---
+
+This coding exercise was submitted for the [University of Pennsylvania's Criminal Justice Data Science Course](https://github.com/gregridgeway/R4crim>) taught by Dr. Gregory Ridgeway. Script has been modified from course examples to fit personal notation conventions. California city shapes, California Census tracts, and Los Angeles County Rods were acquired from the [Census](https://www.census.gov/cgi-bin/geo/shapefiles/index.php) website. Los Angeles Safety Zones shapefiles were obtained by the Dr. Gregory K. Ridgeway from the Los Angeles City Attorney's Office. The 2014 crime data was taken from the [Los Angeles Open Data website](https://www.census.gov/cgi-bin/geo/shapefiles/index.php).  
+
+Key skills: Managing Spatial Data, Manipulating Spatial Object, Accessing Data Through JSON, Merging ACS/LAPD/Gang Injunction Data/Census TIGER files
+
+
+# Exploring Los Angeles Gang Injunction/Safety Zone Maps
+
+## Data Management 
+
+### Load map and packages
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, results='hold'}
+  # Load packages
+    library(sf)
+    library(lubridate)
+
+  # Load Map
+    map_sz <- st_read("allinjunctions/allinjunctions.shp")
+
+```
+
+
+### Plot the geometry of the shapefile
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, results='hold'}
+
+  plot(st_geometry(map_sz))
+  axis(1); axis(2); box() #add x and y axis for scale
+
+```
+
+
+### View the map projection of the shapefile
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, results='hold'}
+
+  st_crs(map_sz)
+
+```
+
+
+### Examine the data attached to each polygon
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, results='hold'}
+
+  map_sz[1:3,]
+
+```
+
+
+### Extract coordinates of the first injunction
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, results='hold'}
+
+  st_coordinates(map_sz[1,])
+
+```
+
+
+### Clean up dates
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, results='hold'}
+
+  map_sz$Pre_Date <- as.character(map_sz$Pre_Date)
+  map_sz$Pre_Date <- gsub("Jne", "June", map_sz$Pre_Date)
+  map_sz$Pre_Date <- gsub("Sept\\.", "September", map_sz$Pre_Date)
+  map_sz$Pre_Date <- mdy(map_sz$Pre_Date)
+  map_sz$Perm_Date <- as.character(map_sz$Perm_Date)
+  map_sz$Perm_Date <- gsub("Sept\\.", "September ", map_sz$Perm_Date)
+  map_sz$Perm_Date <- mdy(map_sz$Perm_Date)
+  map_sz$startDate <- pmin(map_sz$Pre_Date, map_sz$Perm_Date, na.rm = TRUE)
+
+```
+
+
+### Combine overlapping injuctions into one polygon
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Combine polygons  
+    map_sz_union <- st_union(map_sz)
+  
+  # Check map units
+    st_crs(map_sz_union)$units
+
+```
+
+### Plot combined polygon with a buffer zone that is within 500 feet of an injunction
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Create buffer zone
+    map_sz_500 <- st_buffer(map_sz_union, dist=500)
+
+  # Plot buffer zone
+    plot(st_geometry(map_sz_500)) 
+  
+  # "Fill in" the combined injunction polygon in red
+    plot(st_geometry(map_sz_union), col="red", border=NA, add=TRUE)
+  
+```
+
+
+## Create MS-13 Injunction Shapefiles
+Double-check the LA City Attorney's Office [website](http://freepdfhosting.com/0d363a8b29.pdf) with the correct injunction posted on its website.
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Subset MS-13 data
+    map_ms13 <- subset(map_sz, case_no=="BC311766")
+  
+  # Combine polygons
+    a <- st_union(map_ms13)
+  
+  # Add back data
+    map_ms13 <- st_sf(map_ms13[1,c("NAME","case_no","Safety_Zn","gang_name","startDate")],
+                     geometry=a)
+  
+  # Plot MS-13 gang injunction safety zone and add 500ft buffer
+    map_ms13_buff <- st_difference(st_geometry(st_buffer(map_ms13, dist=500)),
+                               st_geometry(map_ms13))
+    plot(st_geometry(map_ms13_buff), col="green")
+
+```
+
+
+# Merge LA City Gang Injunction and US Census Tract (TIGER) Shapefiles
+
+## Extract outline of the city of Los Angeles from California Shapefile
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Load TIGER shapefiles
+    map_ca <- st_read("tl_2014_06_place/tl_2014_06_place.shp") # california state polygon
+    map_tract <- st_read("tl_2014_06_tract/tl_2014_06_tract.shp") # california census tracts polygon
+
+  # Extract LA city outline from CA shapefile
+    map_la <- subset(map_ca, NAMELSAD=="Los Angeles city")
+    
+  # Plot LA city polygon
+    plot(st_geometry(map_la))
+         
+```
+
+
+## Coordinate map projections for each shapefile
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+  # Check projections
+    st_crs(map_la) # longitude/latitude
+    st_crs(map_tract) # longitude/latitude
+    st_crs(map_sz) # lambert conformal conic
+    
+  # Turn map projections into LCC projection
+    map_tract <- st_transform(map_tract, crs=st_crs(map_sz))
+    map_la   <- st_transform(map_la,   crs=st_crs(map_sz))
+```
+
+
+## Merge LA City and Census Tract shapefiles
+
+### Determine which census tract intersects with LA map
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # List of census tracts that intersect with map_la (only 1)
+    a <- st_intersects(map_la, map_tract)
+
+  # Create new column in map_tract to indicate if it's in LA
+    map_tract$inLA <- FALSE
+    map_tract$inLA[a[[1]]] <- TRUE
+  
+```
+  
+  
+### Create LA city shapefile with census tracts
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+ 
+  map_la_tract <- subset(map_tract, inLA)
+  plot(st_geometry(map_la_tract))
+  plot(st_geometry(map_la), add=TRUE, border="red", lwd=3)
+
+```
+
+
+## Merge LA map with census tracts with MS-13 injunction map
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Create a TRUE / FALSE indicate of whether a tract is in MS-13
+    st_intersects(map_ms13, map_la_tract)
+    map_la_tract$inMS13 <- FALSE
+    map_la_tract$inMS13[st_intersects(map_ms13, map_la_tract)[[1]]] <- TRUE
+  
+  # Merge shape files
+    plot(st_geometry(subset(map_la_tract, inMS13)))
+    plot(st_geometry(map_ms13), border="red", lwd=3, add=TRUE)
+    
+```
+
+
+### Remove census tracts not in the MS-13 safety zone
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+    i <- st_intersects(st_buffer(map_ms13, dist = -200), map_la_tract)[[1]]
+    map_la_tract$inMS13 <- FALSE
+    map_la_tract$inMS13[i] <- TRUE
+  
+  # Merge shape files
+    plot(st_geometry(subset(map_la_tract, inMS13)))
+    plot(st_geometry(map_ms13), border="red", lwd=3, add=TRUE)
+    
+```
+
+
+# Merge in Demographic Data from the American Community Survey
+
+## Access ACS data via Javascript Object Notation (JSON)
+For each census tract in LA County, extract total population (B03002001), number of non-Hispanic white residents (B03002003), non-Hispanic black residents (B03002004), and Hispanic residents (B03002012).
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Load relevant packages
+    library(jsonlite)
+
+  # Total Number of People by Specific Census Tracts
+    acs_race <- fromJSON("https://api.census.gov/data/2017/acs/acs5?get=B03002_001E,B03002_003E,B03002_004E,B03002_012E&for=tract:*&in=state:06+county:037")
+    
+  # Convert into data frame
+    a <- data.frame(acs_race[-1,], stringsAsFactors = FALSE)
+    names(a) <- acs_race[1,]
+    names(a)[1:4] <- c("total", "white", "black", "hisp")
+    acs_race <- a
+    for(i in c("total", "white", "black", "hisp"))
+        acs_race[[i]] <- as.numeric(acs_race[[i]])
+    
+  # Add column of resident of other race groups
+    acs_race$other <- with(acs_race, total-white-black-hisp)
+ 
+```
+
+
+## Add race information to MS-13 injunction data
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Match tract IDs and merge in percent hispanic
+    i <- match(map_la_tract$TRACTCE, acs_race$tract)
+    map_la_tract$pctHisp <- with(acs_race[i,], ifelse(total > 0 & !is.na(hisp), hisp/total, 0))
+ 
+```
+
+
+## Plot and format of percent hispanic residents within MS-13 safety zone by census tract
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Format shading by percentage
+    col <- with(map_la_tract, gray(pctHisp[inMS13]))
+    plot(st_geometry(subset(map_la_tract, inMS13)), col = col)
+    plot(st_geometry(map_ms13), border = "red", lwd = 3, add = TRUE)
+    
+  # Text overlay
+    labs <- with(map_la_tract, paste0(round(100*pctHisp[inMS13]), "%"))
+    text(st_coordinates(st_centroid(subset(map_la_tract, inMS13))),
+         labels = labs,
+         cex = 0.5)
+ 
+```
+
+
+# Working with Point Data Using LA Crime Data
+
+## Data Management of Data Taken from LA Open Data Portal
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Load file
+    crime_data<- read.csv("LAPD_Crime_and_Collision_Raw_Data_-_2014.csv.gz",
+                      as.is=TRUE)
+
+  # Locate any geospatial variables
+    names(crime_data)
+    
+  # Extract latitude and longitude information
+    a <- gsub("[()]", "", crime_data$Location.1)
+    crime_data$lat <- as.numeric(gsub(",.*", "", a))
+    crime_data$lon <- as.numeric(gsub("[^,]*,", "", a))
+    crime_data$Location.1 <- NULL
+    crime_data <- subset(crime_data, !is.na(lat))
+ 
+```
+
+
+### Convert data frame into a simple features spatial object 
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Set to latitude/longitude coordinate system
+    crime_data <- st_as_sf(crime_data, 
+                          coords = c("lon","lat"),
+                          crs = 4326) 
+
+  # Set to the same coordinate system as the MS-13 map
+    crime_data <- st_transform(crime_data, st_crs(map_ms13))
+
+```
+
+
+## Identify crime data occurring within 1 mile of MS-13 injunction.
+
+### Subset LAPD areas (1,2,3,6,7, and 20) that intersected with MS-13 dafety zone.
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  crime_ms13 <- subset(crime_data, AREA %in% c(1,2,3,6,7,11,20))
+
+```
+
+
+### Create variable to code location around MS-13 injuction (within safety zone, buffer, and outside)
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # create variable to label crime's location
+    crime_ms13$place1 <- "outside"
+    i <- st_intersects(map_ms13, crime_ms13)[[1]]
+    crime_ms13$place1[i] <- "SZ"
+    i <- st_intersects(st_difference(st_buffer(map_ms13, dist = 5280), map_ms13), crime_ms13)[[1]]
+    crime_ms13$place1[i] <- "buffer"
+    
+  # plot to see if correctly labeled
+    plot(st_geometry(st_buffer(map_ms13, dist = 5280)))
+    plot(st_geometry(map_ms13), border = "red", lwd = 3, add = TRUE)
+    plot(st_geometry(subset(crime_ms13, place1 == "SZ")), pch = ".", col = "red", add = TRUE)
+    plot(st_geometry(subset(crime_ms13, place1 == "buffer")), pch = ".", col = "blue", add = TRUE)
+    plot(st_geometry(subset(crime_ms13, place1 == "outside")), pch = ".", col = "green", add = TRUE)
+    
+  # combine geometries of three polygons
+    map_a <- c(st_geometry(map_ms13),
+               st_geometry(st_difference(st_buffer(map_ms13, dist = 5280), map_ms13)),
+               st_geometry(st_difference(st_buffer(map_ms13, dist = 80*5280), st_buffer(map_ms13, dist = 5280))))
+    
+  # create sf object
+    map_a <- st_sf(place2 = c("SZ", "buffer", "outside"), geom = map_a)
+    crime_ms13 <- st_join(crime_ms13, map_a)
+      
+``` 
+
+
+# Creating New Geographic Objects
+
+## Extract the Southern Component of the MS-13 Map
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # get sf object information
+    is(st_geometry(map_ms13))
+
+  # break apart multipolygon object into polygons
+    a <- st_cast(map_ms13, "POLYGON")
+    
+  # store southern polygon
+    ms13_south <- a[1,]
+    plot(st_geometry(ms13_south))
+```
+
+
+# Overlaying a Street Map
+
+## Merge TIGER maps with streets with injunction map
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # load TIGER line file
+    la_street <- st_read("tl_2014_06037_roads/tl_2014_06037_roads.shp")
+
+  # use the same projection as a the injunction map
+    la_street <- st_transform(la_street, st_crs(ms13_south))
+    
+  # extract only the streets that instersect with the MS-13 south safety zone
+    la_street$inSZ <- FALSE
+    i <- st_intersects(ms13_south, la_street)[[1]]
+    la_street$inSZ[i] <- TRUE
+    ms13_south_st <- subset(la_street, inSZ)
+    
+  # plot
+    plot(st_geometry(ms13_south_st))
+    plot(st_geometry(ms13_south), border = "red", lwd = 3, add = TRUE)
+    
+```
+
+
+## Add street names 
+
+### Function on where and what angle to place street names
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # extract coords for every street segment
+    a <- lapply(st_geometry(ms13_south_st), st_coordinates)
+                
+  # get x,y, and angle for each street segment
+   labs <- sapply(a, function(coord)
+   {
+      # which parts of the street are inside MS13 safety zone
+      i <- which((coord[,"X"] > st_bbox(ms13_south_st)["xmin"]) &
+                 (coord[,"X"] < st_bbox(ms13_south_st)["xmax"]) &
+                 (coord[,"Y"] > st_bbox(ms13_south_st)["ymin"]) &
+                 (coord[,"Y"] < st_bbox(ms13_south_st)["ymax"]))
+      # don't select the last one, too close to the edge
+      i <- setdiff(i, nrow(coord))
+      # if none are in bounding box just use the first coordinate
+      if(length(i)==0) i <- 1
+      # randomly choose a point on the street for the label
+      i <- sample(i, size=1)
+      # compute the slope  of the street, change in y/change in x
+      streetSlope <- (coord[i+1,2]-coord[i,2]) / (coord[i+1,1]-coord[i,1])
+      # compute the angle of the slope with the arc-tangent
+      angle <- atan(streetSlope)
+      # atan() returns radians, convert to degrees
+      angle <- 180*angle/pi
+      # round to the nearest 10
+      angle <- round(angle, -1)
+      # would rather not have labels that are upside down
+      angle <- ifelse(angle < -90,  180+angle, angle)
+      angle <- ifelse(angle >  90, -180+angle, angle)
+      
+      return(c(x=coord[i,1], y=coord[i,2], angle=angle))
+   })
+  
+  # transpose results and get data frame
+   labs <- data.frame(t(labs))
+   
+```
+
+
+### Plot
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  plot(st_geometry(ms13_south), border = "red", lwd = 1)
+  plot(st_geometry(ms13_south_st), add = TRUE)
+  plot(st_geometry(ms13_south), border = "red", lwd = 3, add = TRUE)
+  
+  for(i in 1:nrow(labs))
+  {
+     text(labs$x[i], labs$y[i],
+          ms13_south_st$FULLNAME[i],
+          srt = labs$angle[i],         # srt = string rotation
+          cex = 0.6)                   # cex = character expansion
+  }
+  
+```
+
+
+# Geospatial Analysis of Crime in the MS-13 Safety Zone
+
+## CRIME COUNT within 100 feet of Wilshire Blvd
+
+### Highlight Wilshire Ave on the map
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  plot(st_geometry(ms13_south), border = "red", lwd = 1)
+  plot(st_geometry(ms13_south_st), add = TRUE)
+  plot(st_geometry(ms13_south), border = "red", lwd = 3, add = TRUE)
+  
+  for(i in 1:nrow(labs))
+  {
+     text(labs$x[i], labs$y[i],
+          ms13_south_st$FULLNAME[i],
+          srt = labs$angle[i],         # srt = string rotation
+          cex = 0.6)                   # cex = character expansion
+  }
+  
+  wilshire_st <- subset(ms13_south_st, FULLNAME == "Wilshire Blvd")
+
+  plot(st_geometry(wilshire_st), col = "green", lwd = 3, add = TRUE)
+  
+```
+
+
+### Create 100ft buffer around Wilshire, exclude outside of MS-13 safety zone
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # create a 100-foot buffer, but only the part that is in the ms13 safety zone
+    wilshire_buff <- st_intersection(st_geometry(st_buffer(wilshire_st, dist = 100)),
+                                      st_geometry(ms13_south))
+
+  # subset crime data within that buffer
+    i <- st_intersects(wilshire_buff, crime_ms13)[[1]]
+    crime_ms13$inWilbuf <- FALSE
+    crime_ms13$inWilbuf[i] <- TRUE
+    
+    plot(st_geometry(ms13_south), border="red", lwd = 1)
+    plot(st_geometry(wilshire_buff), add = TRUE, border = "green")
+    plot(st_geometry(ms13_south_st), add = TRUE)
+    plot(st_geometry(ms13_south), border = "red", lwd=3, add = TRUE)
+    
+    for(i in 1:nrow(labs))
+    {
+       text(labs$x[i], labs$y[i],
+            ms13_south_st$FULLNAME[i],
+            srt = labs$angle[i],         # srt = string rotation
+            cex = 0.6)                   # cex = character expansion
+    }
+    
+    plot(st_geometry(subset(crime_ms13, inWilbuf)), col = "blue", add = TRUE, pch = 16, cex = 0.5)
+    
+```
+
+
+## COMMON CRIMES withn 100 feet of Wilshire Blvd
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  with(crime_ms13, rev(sort(table(Crm.Cd.Desc[inWilbuf])))[1:5]) 
+
+```
+
+
+## Streets with MAX INCIDENTS of crime
+
+### Subset crime data for only MS-13 South
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  i <- st_intersects(ms13_south, crime_ms13)[[1]]
+  crime_ms13_south <- crime_ms13[i,]
+  plot(st_geometry(ms13_south), border = "red", lwd = 1)
+  plot(st_geometry(ms13_south_st), add = TRUE)
+  plot(st_geometry(ms13_south), border = "red", lwd = 3, add = TRUE)
+  plot(st_geometry(crime_ms13_south),
+       add = TRUE, col = "blue",pch = 16, cex = 0.5)
+  
+```
+
+
+### Compute the distance for each point to the closest street in `ms13_south_st`
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  d <- st_distance(crime_ms13_south, ms13_south_st)
+  dim(d) # row for each crime, column for each street
+
+  # for each row (crime) find out which column (street)
+    iClose <- apply(d, 1, which.min)
+
+  # for the first crime check that the original address is similar to closest street
+    crime_ms13_south[1,]
+    ms13_south_st[iClose[1],]
+    plot(st_geometry(ms13_south), border = "red", lwd = 1)
+    plot(st_geometry(ms13_south_st), add = TRUE)
+    plot(st_geometry(ms13_south), border = "red", lwd = 3, add = TRUE)
+    
+    for(i in 1:nrow(labs))
+    {
+       text(labs$x[i], labs$y[i],
+            ms13_south_st$FULLNAME[i],
+            srt = labs$angle[i],
+            cex = 0.6)
+    }
+    
+    plot(st_geometry(crime_ms13_south[1,]),
+         add = TRUE, col = "red", pch = 16, cex = 2)
+```
+  
+
+### Streets with the most incidents using distance calculation
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+  
+  a <- table(ms13_south_st$FULLNAME[iClose])
+  rev(sort(a))[1:10]
+
+```
+
+## CRIME COUNT within 500ft of a Metrorail station
+
+### Map stations (Wilshire at Western Ave, S Normandie Ave, S Vermont Ave, Alvarado) and buffer zone
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  map_metro <- st_intersection(subset(la_street, FULLNAME %in% 
+                                c("S Western Ave", "S Normandie Ave", 
+                                  "S Vermont Ave", "S Alvarado St")),
+                      subset(la_street, FULLNAME == "Wilshire Blvd"))
+
+  plot(st_geometry(ms13_south), border = "red", lwd = 1)
+  plot(st_geometry(ms13_south_st), add = TRUE)
+  plot(st_geometry(ms13_south), border = "red", lwd = 3, add = TRUE)
+  plot(st_geometry(map_metro), col = "purple", add = TRUE, pch = 16, cex = 2)
+  
+  plot(st_geometry(st_buffer(map_metro, dist = 500)), add = TRUE, border = "purple")
+
+```
+
+
+### Crime counts for each station
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Each station
+  i <- st_intersects(st_buffer(map_metro, dist = 500), crime_data)
+  sapply(i, length)
+
+  # Overall
+  length(unlist(i))
+
+```
+
+
+## CRIME COUNT within 500ft of the RFK Community School
+
+### Plot the school area and buffer
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # plot the intersection points
+    a <- st_intersection(subset(la_street, FULLNAME %in% c("S Mariposa Ave", "S Catalina St")),
+                       subset(la_street, FULLNAME %in% c("W 8th St", "Wilshire Blvd")))
+
+    plot(st_geometry(ms13_south), border = "red", lwd = 1)
+    plot(st_geometry(ms13_south_st), add = TRUE)
+    plot(st_geometry(ms13_south), border = "red", lwd = 3, add = TRUE)
+    
+    a <- a[-which.min(st_coordinates(a)[,1]),] #drop Maripose/Wilshire intersection
+    
+    plot(st_geometry(a), col = "orange", add = TRUE, pch = 16, cex = 2)
+    
+  # compute the convex hull of all 4 points
+    map_rfk <- st_convex_hull(st_union(a))
+    plot(st_geometry(map_rfk), border = "purple", add = TRUE, lwd = 3)
+    
+```
+
+
+### Total crime count within 500ft of RFK School
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  length(st_intersects(st_buffer(map_rfk, dist = 500), crime_ms13_south))
+
+```
+
+
+
+# Keyhole Markup Language (KML) File for Google Maps
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+ a <- st_transform(map_ms13, crs = 4326)
+  
+  st_write(a,
+           dsn = "ms13.kml",
+           layer = "ms13",
+           driver = "KML",
+           delete_dsn = TRUE)
+
+```
