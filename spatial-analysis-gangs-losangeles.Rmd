@@ -5,7 +5,7 @@ date: "5/25/2019"
 output: pdf_document
 ---
 
-This coding exercise was submitted for the [University of Pennsylvania's Criminal Justice Data Science Course](https://github.com/gregridgeway/R4crim>) taught by Dr. Gregory Ridgeway. Script has been modified from course examples to fit personal notation conventions. California city shapes, California Census tracts, and Los Angeles County Rods were acquired from the [Census](https://www.census.gov/cgi-bin/geo/shapefiles/index.php) website. Los Angeles Safety Zones shapefiles were obtained by the Dr. Gregory K. Ridgeway from the Los Angeles City Attorney's Office. The 2014 crime data was taken from the [Los Angeles Open Data website](https://www.census.gov/cgi-bin/geo/shapefiles/index.php).  
+This coding exercise was from [University of Pennsylvania's Criminal Justice Data Science Course](https://github.com/gregridgeway/R4crim>) taught by Dr. Gregory Ridgeway. Script has been modified from course examples to fit personal notation conventions. California city shapes, California Census tracts, and Los Angeles County Rods were acquired from the [Census](https://www.census.gov/cgi-bin/geo/shapefiles/index.php) website. Los Angeles Safety Zones shapefiles were obtained by the Dr. Gregory K. Ridgeway from the Los Angeles City Attorney's Office. The 2014 crime data was taken from the [Los Angeles Open Data website](https://www.census.gov/cgi-bin/geo/shapefiles/index.php).  
 
 Key skills: Managing Spatial Data, Manipulating Spatial Object, Accessing Data Through JSON, Merging ACS/LAPD/Gang Injunction Data/Census TIGER files
 
