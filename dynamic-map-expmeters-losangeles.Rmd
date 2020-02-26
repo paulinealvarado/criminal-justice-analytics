@@ -1,0 +1,300 @@
+---
+title: "Criminal Justice Analytics Final Project: 2017 Los Angeles Parking Citations"
+author: "Pauline I. Alvarado"
+date: "12/13/2018"
+output: pdf_document
+always_allow_html: true
+---
+
+This final project was submitted for [University of Pennsylvania's Criminal Justice Data Science Course](https://github.com/gregridgeway/R4crim>) taught by Dr. Gregory Ridgeway, who conducted the one-on-one code review. Data consists of parking citations from the city of Los Angeles in 2017 taken from the [LA Open Data Website](https://data.lacity.org/A-Well-Run-City/Parking-Citations/wjz9-h9np/data). Available data, to date (2010-2018), consists of more than 8 million entries. The filter function on the website was used to download only 2017 data. California city shapes, California Census tracts, and Los Angeles County Rods were acquired from the [Census](https://www.census.gov/cgi-bin/geo/shapefiles/index.php) website.
+
+
+# Research Question
+In which areas in Los Angeles is a person most likely to get a ticket from an expired parking meter? 
+
+
+# Data Management
+## Load Relevant Packages and Review Data
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Load package
+    library(sqldf)
+
+  # Review data
+    scan("parking-citations-2017.csv", what = "", nlines = 10, sep = "\n")
+    
+```
+
+
+## Clean Up the File
+Space between words need to be moved for variables. Multiple commas indicate no data and need to be converted to NULL.
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+   
+  # Set up ability to read the file
+    infile  <- file("parking-citations-2017.csv",       'r')
+    outfile <- file("parking-citations-2017-clean.csv", 'w')
+
+  # Clean up column names
+    a <- readLines(infile, n=1) # Get variable names from Row 1
+    a <- gsub(",",";",a) 
+    a <- gsub(" ","",a)  
+    writeLines(a, con=outfile)
+    flush(outfile)
+
+  # Clean the rest of the data with a loop 
+    c.lines <- 0
+  
+    system.time(
+      while ((length(a <- readLines(infile, n=100000)) >  0))
+        {
+          c.lines <- c.lines + length(a)
+          print(c.lines)
+          
+          # Change all commas to a semi-colon, lookahead looks for paired quotes
+          a <- gsub("(,)(?=(?:[^\"]|\"[^\"]*\")*$)",";",a,perl=TRUE)
+          
+          # Remove semi-colon for a specific line
+          a <- gsub("605; WILSHIRE", "605 WILSHIRE", a)
+  
+          # Write the cleaned up data to storage
+          writeLines(a, con=outfile)
+        }
+    )
+    close(infile)
+    close(outfile)
+  
+  # Spotcheck lines
+    scan("parking-citations-2017-clean.csv", what="",sep="\n",skip=339410,nlines=3)
+
+```   
+    
+    
+## Build a SQL Database
+### Set up the database
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+    
+  # Look over the first few rows of the dataset
+    scan(what="",file="parking-citations-2017-clean.csv",nlines=5,sep="\n")
+    a <- read.table("parking-citations-2017-clean.csv",sep=";",nrows=5,header=TRUE)
+
+  # Run once to set up a database
+    # Connect or create a new GSQLite database
+      con <- dbConnect(SQLite(), dbname="la-parking-citations-2017.db")
+      variabletypes <- dbDataType(con, a)
+      if(dbExistsTable(con, "parking")) dbRemoveTable(con, "parking")
+      dbWriteTable(con, "parking",
+                   "parking-citations-2017-clean.csv",
+                   row.names=FALSE,
+                   header=TRUE,
+                   field.types=variabletypes,
+                   sep=";") 
+      dbListFields(con,"parking")
+      dbDisconnect(con)
+
+```
+
+
+### Format Date/Time Column
+#### Load related package and view column characteristics
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Related package
+    library(lubridate)
+      
+  # Info on internal data
+    con <- dbConnect(SQLite(), dbname="la-parking-citations-2017.db") # reconnect to database
+    res <- dbSendQuery(con, "PRAGMA table_info(parking)")
+    fetch(res, n = -1)
+    dbClearResult(res)
+
+      
+```
+
+
+#### Convert to proper date format
+Date column is currently categorized as "TEXT".
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Convert to proper date format
+    res <- dbSendQuery(con, "SELECT Ticketnumber, IssueDate FROM parking")
+    data <- fetch(res, n = -1)
+    dbClearResult(res)
+
+    data$datefix <- mdy(data$IssueDate)
+    data$datefix <- as.character(data$datefix)
+    data$Date <- NULL
+
+    if(dbExistsTable(con,"DateFix")) dbRemoveTable(con, "DateFix")
+    dbWriteTable(con, "DateFix", data, row.names=FALSE)
+    dbListTables(con)
+
+  # Inspect the new DateFix table
+    res <- dbSendQuery(con, "
+                            SELECT TicketNumber, IssueDate,
+                            datefix,
+                            strftime('%w',datefix)
+                            FROM DateFix")
+    fetch(res, n = 10)
+    dbClearResult(res)
+      
+  # Check if '%w' work
+    wday("2017-01-01",label=TRUE)
+
+  # Drop the old parking table & create a new parking table with formatted dates
+      # Rename old table
+      res <- dbSendQuery(con, "
+                              ALTER TABLE parking RENAME TO parking_old")
+                              dbClearResult(res)
+      dbListTables(con) # view all existing tables
+
+      # List all variables to keep
+        a <- dbListFields(con,"parking_old")
+        paste(a,collapse=",")
+  
+        res <- dbSendQuery(con, "
+                                CREATE TABLE parking AS
+                                SELECT parking_old.Ticketnumber,
+                                        DateFix.datefix AS IssueDate,
+                                        parking_old.Issuetime,
+                                        parking_old.MeterId,
+                                        parking_old.MarkedTime,
+                                        parking_old.PlateExpiryDate,
+                                        parking_old.VIN,
+                                        parking_old.Make,
+                                        parking_old.BodyStyle,
+                                        parking_old.Color,
+                                        parking_old.Location,
+                                        parking_old.Route,
+                                        parking_old.Agency,
+                                        parking_old.Violationcode,
+                                        parking_old.ViolationDescription,
+                                        parking_old.Fineamount,
+                                        parking_old.Latitude,
+                                        parking_old.Longitude
+                                FROM parking_old,DateFix
+                                WHERE parking_old.Ticketnumber=DateFix.Ticketnumber")
+        
+      # Look at the new table
+        res <- dbSendQuery(con, "
+                                SELECT *
+                                FROM parking")
+        fetch(res, n = 10)
+        dbClearResult(res)
+      
+      # Look at all the existing tables & drop unecessary tables
+        dbListTables(con)
+        
+        res <- dbSendQuery(con, "DROP TABLE parking_old")
+        dbClearResult(res)
+  
+        res <- dbSendQuery(con, "DROP TABLE DateFix")
+        dbClearResult(res)
+
+  # Clean up unused space
+    system.time(res <- dbSendQuery(con, "VACUUM"))
+
+```
+
+ 
+# Select Data to Analyze
+## View top 50 violations
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+    
+  # Reconnect to the database
+    con <- dbConnect(SQLite(), dbname="la-parking-citations-2017.db")
+
+  # Test query
+    res <- dbSendQuery(con, "SELECT COUNT (*), ViolationDescription
+                            FROM parking
+                            GROUP BY ViolationDescription
+                            ORDER BY COUNT(*) DESC
+                            LIMIT 50")
+    top50_violations <- fetch(res, n = -1)
+    dbClearResult(res)
+    dbDisconnect(con)
+
+    top50_violations
+    
+```
+
+
+## Create working dataset
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+      
+  con <- dbConnect(SQLite(), dbname="la-parking-citations-2017.db")
+  res <- dbSendQuery(con, "SELECT Latitude,Longitude, ViolationDescription
+                            FROM parking
+                            WHERE 
+                                  ViolationDescription='METER EXP.' OR
+                                  ViolationDescription='METER EXPIRED'")
+  meter_expired_2017 <- fetch(res, n = -1)
+  dbClearResult(res)
+  dbDisconnect(con)
+
+  
+  # Remove Latitude and Longitude null value of 99999
+    meter_expired_2017 <- subset(meter_expired_2017, Latitude!="99999")
+    
+
+```
+
+
+
+# Plot Expired Meter Citation Data
+## Ensure both the expired meter data and shapefile are on the coordinate system
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Load package to work with simple features files
+    library(sf)
+      
+  # Load map of Los Angeles shapefile
+    map_ca <- st_read("tl_2014_06_place/tl_2014_06_place.shp")
+    map_la <- subset(map_ca, NAMELSAD=="Los Angeles city")
+    
+  # Add simple features data to meter_expired_2017 dataframe
+    meter_expired_shape <- st_as_sf(meter_expired_2017,
+                     coords=c("Latitude","Longitude"),
+                     crs="+proj=lcc +lat_1=34.03333333333333 +lat_2=35.46666666666667 
+                          +lat_0=33.5 +lon_0=-118 +x_0=2000000 +y_0=500000.0000000002 
+                          +ellps=GRS80 +datum=NAD83 +to_meter=0.3048006096012192 no_defs") 
+      meter_expired_shape<- st_transform(meter_expired_shape, crs = 4269)
+    
+  # View coordinate systems
+    st_crs(map_la)
+    st_crs(meter_expired_shape)
+    
+    
+```
+
+
+## Plot simple features map
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+    plot(st_geometry(map_la))
+    plot(st_geometry(meter_expired_shape), pch=".", col="green", add=TRUE)
+    
+```
+
+
+## Plot point data on dynamic map using Leaflet
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Load Leaflet
+    library(leaflet) 
+
+ # Extract coordinates
+    meter_expired_leaf <- st_coordinates(meter_expired_shape)
+    meter_expired_leaf <- data.frame(meter_expired_leaf)
+    names(meter_expired_leaf) <- c("longitude","latitude")
+    
+ # Aggregate by coordinates
+   library(tidyverse)
+   meter_expired_leaf <- meter_expired_leaf %>% group_by(latitude, longitude) %>% summarise(count = n())
+   
+  # Plot data on in a bubble map format
+    leaflet(meter_expired_leaf) %>% 
+    addTiles() %>%
+    addCircles(lng = ~longitude, lat = ~latitude, weight = 1, radius = ~sqrt(count) * 10)
+      
+```
