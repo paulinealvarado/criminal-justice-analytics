@@ -12,7 +12,7 @@ Key skills: Managing Spatial Data, Manipulating Spatial Object, Accessing Data T
 
 # Exploring Los Angeles Gang Injunction/Safety Zone Maps
 
-## Data Management 
+## Data Wrangling 
 
 ### Load map and packages
 ```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, results='hold'}
