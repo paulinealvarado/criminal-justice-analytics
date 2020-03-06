@@ -1,0 +1,196 @@
+---
+title: "Working with FBI Uniform Crime Report Data: Offenses Known and Clearances by Arrest (2012)"
+author: "Pauline I. Alvarado"
+date: "Fall 2018"
+output: pdf_document
+---
+
+This coding exercise was from [University of Pennsylvania's Criminal Justice Data Science Course](https://github.com/gregridgeway/R4crim>) taught by Dr. Gregory Ridgeway. Script has been modified from course examples to fit personal notation conventions. FData was taken from the [National Archive of Criminal Justice Data (NACJD)](https://doi.org/10.3886/ICPSR35021.v1).  
+
+
+# Data Wrangling
+
+## Load and view data
+
+### Overview
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, results='hold'}
+
+  # Load data
+    load("UCR2012/DS0001/35021-0001-Data.rda")
+
+  # View data/object components
+    is(da35021.0001)
+    
+  # View first 2 line and 200 columns
+    da35021.0001[1:2,1:200]
+
+```
+
+
+
+### View variable definitions stored in the data
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, results='hold'}
+
+  var.lookup <- attributes(da35021.0001)$variable.labels
+  var.lookup[1:32]
+
+```
+
+
+
+## Subset agencies that have complete data
+
+### View which months have been reported
+Result: Most of the data is reported in December
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, results='hold'}
+
+  table(da35021.0001$V12)
+
+```
+
+
+
+### View agencies that don't report in December
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, results='hold'}
+
+  # View agencies that don't report in December with less than 1 million in population
+    with(subset(da35021.0001, V12 != "(12) Dec last reported"), summary(V14, digits = 10))
+
+  # View agencies reporting information with jurisdiction of greater than 50k population
+    subset(da35021.0001, (V12 != "(12) Dec last reported") & (V14 > 50000))[,c("V27", "V29", "V14", "V13", "V12")]
+    
+  # View whether data wa also reported in another month
+    var.names <- grep("MONTH INCLUDED IN", var.lookup, value = TRUE)
+    var.names <- names(var.names)
+    for(xj in var.names) 
+    print(table(da35021.0001[,xj]))
+
+```
+
+
+
+### Subset agencies with calendar year end reports (most complete data) 
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, results='hold'}
+
+  da35021.0001 <- subset(da35021.0001, V12 == "(12) Dec last reported")
+
+```
+
+
+
+## Create a dataframe
+### Keep only relevant variables
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, results='hold'}
+
+  ucr <- data.frame(ORI    = as.character(da35021.0001$V3),
+                    AGENCY = as.character(da35021.0001$V29),
+                    AREA   = as.character(da35021.0001$V26),
+                    POP    = da35021.0001$V14,
+                    MONTHS = as.character(da35021.0001$V12),
+                    STATE  = as.character(da35021.0001$V2),
+                    stringsAsFactors = FALSE)
+                    
+```
+
+
+
+### Create new variables for each Part I crime offense
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, results='hold'}
+
+  # Murder (Counts)
+    var.names <- grep("ACT NUM MURDER", var.lookup, value = TRUE)
+    var.names <- names(var.names)
+    ucr$murder <- rowSums(da35021.0001[,var.names])
+    
+  # Rape (Counts)
+    var.names <- grep("ACT NUM RAPE", var.lookup, value = TRUE)
+    var.names <- names(var.names)
+    ucr$rape <- rowSums(da35021.0001[,var.names])
+    
+  # Robbery (Counts)
+    var.names <- grep("ACT NUM ROBBRY", var.lookup, value = TRUE)
+    var.names <- names(var.names)
+    ucr$robbery <- rowSums(da35021.0001[,var.names])
+    
+  # Aggravated Assault (Counts)
+    var.names <- grep("ACT NUM ASSLT", var.lookup, value = TRUE)
+    var.names <- names(var.names)
+    ucr$assault <- rowSums(da35021.0001[,var.names])
+    
+    var.names <- grep("ACT # SIMPLE ASSLT", var.lookup, value = TRUE)
+    var.names <- names(var.names)
+    ucr$assault <- ucr$assault - rowSums(da35021.0001[,var.names])
+    
+   # Burglary (Counts)
+    var.names <- grep("ACT # BURGLARY", var.lookup, value = TRUE)
+    var.names <- names(var.names)
+    ucr$burglary <- rowSums(da35021.0001[,var.names])
+    
+  # Larceny (Counts)
+    var.names <- grep("ACT # LARCENY", var.lookup, value = TRUE)
+    var.names <- names(var.names)
+    ucr$larceny <- rowSums(da35021.0001[,var.names])
+    
+  # Grand Theft Auto (Counts)
+    var.names <- grep("ACT # VHC THEFT", var.lookup, value = TRUE)
+    var.names <- names(var.names)
+    ucr$gta <- rowSums(da35021.0001[,var.names])
+                    
+```
+
+
+
+# Exercises
+## Make a data frame of "New Jersey"
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, results='hold'}
+
+  nj <- ucr[grep("New Jersey", ucr$STATE),]
+
+```
+
+
+
+## How many murders in New Jersey? How many robberies?
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, results='hold'}
+
+  sum(nj$murder)
+  sum(nj$robbery)
+                    
+```
+
+
+
+## Find burlary rate per person in New Jersey
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, results='hold'}
+
+  sum(nj$burglary) / sum(nj$POP)
+                    
+```
+
+
+
+## Find burglary rate per 100,000
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, results='hold'}
+
+  sum(nj$burglary) / sum(nj$POP) * 100000
+                    
+```
+
+
+
+## Add new column to New Jersey dataset for burglary rate for each agency and sory by descending order
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, results='hold'}
+
+  # Create burglary rate variable
+    nj$burglaryrate <- nj$burglary / nj$POP * 100000 
+
+  # Remove missing / error values
+    nj <- subset(nj, !is.nan(burglaryrate) & !is.infinite(burglaryrate))
+    
+  # View data in descending order
+    nj[with(nj, order(-burglaryrate)),]
+                    
+```
+
+
+
