@@ -13,7 +13,7 @@ This final project was submitted for [University of Pennsylvania's Criminal Just
 In which areas in Los Angeles is a person most likely to get a ticket from an expired parking meter? 
 
 
-# Data Management
+# Data Wrangling
 ## Load Relevant Packages and Review Data
 ```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
 
