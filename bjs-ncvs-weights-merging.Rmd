@@ -1,0 +1,263 @@
+---
+title: "Working with 2012-2013 BJS National Crime Victimization Survey Data"
+author: "Pauline I. Alvarado"
+date: "Fall 2018"
+output: pdf_document
+---
+
+This coding exercise was from [University of Pennsylvania's Criminal Justice Data Science Course](https://github.com/gregridgeway/R4crim>) taught by Dr. Gregory Ridgeway. Script has been modified from course examples to fit personal notation conventions. Data was taken from the [National Archive of Criminal Justice Data (NACJD)](https://www.icpsr.umich.edu/icpsrweb/NACJD/series/95).  
+
+
+# Load and view data
+## List files
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, results='hold'}
+
+  # 2012 Files
+    list.files("NCVS2012/", recursive = TRUE)
+
+  # 2013 Files
+    list.files("NCVS2013/", recursive = TRUE)
+
+```
+
+
+
+## Load and categorize data
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, results='hold'}
+
+  # Address record-type (DS1)
+    load("NCVS2012/DS0001/34650-0001-Data.rda")
+    load("NCVS2013/DS0001/35164-0001-Data.rda")
+
+    addr12 <- da34650.0001
+    addr13 <- da35164.0001
+    
+  # Household information (DS2)
+    load("NCVS2012/DS0002/34650-0002-Data.rda")
+    load("NCVS2013/DS0002/35164-0002-Data.rda")
+
+    househld12 <- da34650.0002
+    househld13 <- da35164.0002
+
+  # Personal information (DS3)
+    load("NCVS2012/DS0003/34650-0003-Data.rda")
+    load("NCVS2013/DS0003/35164-0003-Data.rda")
+
+    person12 <- da34650.0003
+    person13 <- da35164.0003
+    
+  # Incident information (DS4)
+    load("NCVS2012/DS0004/34650-0004-Data.rda")
+    load("NCVS2013/DS0004/35164-0004-Data.rda")
+
+    incident12 <- da34650.0004
+    incident13 <- da35164.0004
+    
+  # Remove objects from the environment
+    rm(da34650.0001, da34650.0002, da34650.0003, da34650.0003, da34650.0004, da35164.0001, da35164.0002, da35164.0003, da35164.0004)
+
+```
+
+
+
+## View month and year of each incident
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, results='hold'}
+
+  with(incident12, table(V4014, V4015))
+  with(incident13, table(V4014, V4015))
+  
+```
+
+
+
+# Create 2012 incident dataframe
+## Merge 2012 and 2013 incident data
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, results='hold'}
+
+  # Bind rows
+    incident2012 <- rbind(incident12, incident13)
+
+  # View years
+    table(incident2012$V4015)
+    
+  # Subset only 2012 information
+    incident2012 <- subset(incident2012, V4015 == 2012)
+  
+```
+
+
+
+## Exclude crimes occurring outside US or have unknown location
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, results='hold'}
+
+  incident2012 <- subset(incident2012, V4022 != "(1) Outside U.S." | is.na(V4022))
+  
+```
+
+
+
+## Only include up to 10 occurrences in a series crime (BJS convention)
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, results='hold'}
+
+  i <- with(incident2012, which((V4019 == "(2) No (is series)") & (V4016 >= 11) & (V4016 <= 996)))
+  incident2012$V4016[i] <- 10
+  incident2012$V4016[incident2012$V4016 >= 997] <- NA
+  
+```
+
+
+
+## Create a "date year" weight
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, results='hold'}
+
+  i <- which(incident2012$V4019 == "(2) No (is series)")
+  incident2012$WGTVICDY <- incident2012$WGTVICCY
+  incident2012$WGTVICDY[i] <- with(incident2012, WGTVICDY[i] * V4016[i])
+  
+```
+
+
+
+## Standardize coding of crime type
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, results='hold'}
+
+  incident2012$V4529 <- gsub("\\(([1-9])))", "(0\\1)", incident2012$V4529)
+  
+```
+
+
+
+# Create 2012 household dataframe
+## Bind 2012 and 2013 incident data
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, results='hold'}
+
+  household2012 <- rbind(househld12, househld13)
+  household2012 <- subset(household2012, YEARQ >= 2012.1 & YEARQ <= 2013.2)
+
+```
+
+
+
+## Standardize coding of "month allocated" variable
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, results='hold'}
+
+  household2012$V2130 <- gsub("\\(0", "\\(", household2012$V2130)
+  table(household2012$V2130)
+
+```
+
+
+
+# Create 2012 person dataframe
+## Fix incompatible factor and numeric values between 2012 and 2013
+2012 factor levels look like "(1) Yes" but coded only as "1" in 2013.
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, results='hold'}
+
+  # gives factor levels for each variable
+    i <- sapply(person12, levels)
+
+  # gives factor levels or each factor variable, non-factor variables return null result
+    i <- i[!sapply(i, is.null)]
+  
+  # store in i, variable where factor levels begin with "("
+    i <- sapply(i, function(x) all(substring(x,1,1) == "("))
+    var.fix <- names(i)[i]
+    
+  # for-loop to fix names
+    for(xj in var.fix)
+    {
+      person12[,xj] <- gsub("\\(([0-9]+)\\).*", "\\1", person12[,xj]) # remove words that follow the parenthesis
+      person12[,xj] <- as.numeric(person12[,xj])
+    }
+
+```
+
+
+
+## Stack 2012 and 2013 data 
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, results='hold'}
+
+  person2012 <- rbind(person12, person13)
+  person2012 <- subset(person2012, YEARQ >= 2012.1 & YEARQ <= 2013.2)
+
+```
+
+
+
+# Merge incident and person dataframes
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, results='hold'}
+
+  # Match and merge data
+    a <- merge(incident2012,                      # indicent data
+               person2012[, c("IDPER", "YEARQ",   # unique ID's of person
+                            "V3014",              # age
+                            "V3015",              # marital status
+                            "V3018")],            # sex
+               by = c("IDPER", "YEARQ"),          # variables to match/merge
+               all.x = TRUE)                      # keep all incidents even if not matched
+  
+    incident2012 <- a
+
+  # Rename age, marital, status, and sex variables
+    names(incident2012)[names(incident2012) == "V3014"] <- "age"
+    names(incident2012)[names(incident2012) == "V3015"] <- "marital"
+    names(incident2012)[names(incident2012) == "V3018"] <- "sex"
+    
+  # View first line of incident data to see if the merge worked!
+    incident2012[1, c("IDPER", "YEARQ", "age", "marital", "sex")]
+
+```
+
+
+## Create new variable: age categories
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, results='hold'}
+
+  incident2012$ageGroup <- cut(incident2012$age, breaks = c(0,16,21,35,45,60,110))
+
+```
+
+
+## Assign number values to actual names to age and marital status variables
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, results='hold'}
+
+  # Deal with missing value indicators
+    incident2012$marital[incident2012$marital == 8] <- NA
+
+  # Add labels
+    incident2012$marital <- factor(incident2012$marital, levels = 1:5, 
+                                   labels = c("married", "widowed", "divorced", "separated", "never married"))
+    
+    incident2012$sex <- factor(incident2012$sex, levels = 1:2,
+                               labels = c("male", "female"))
+
+```
+
+
+
+# Reshape data to find out common crime types by sex (of the crime victim)
+## Estimated counts (weighted)
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, results='hold'}
+
+  a <- aggregate(WGTVICDY ~ V4529 + sex, data = incident2012, FUN = sum)
+  a <- reshape(a, timevar = "sex", idvar = "V4529", direction = "wide")
+  a[is.na(a)] <- 0
+  names(a) <- c("crimeType", "male", "female")
+  a
+
+```
+
+
+
+## Compute row percentages to determine what percentage of each crime is male and female
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, results='hold'}
+
+  temp <- a
+  row.total <- with(temp, male + female)
+  temp$male <- with(temp, 100 * male / row.total)
+  temp$female <- with(temp, 100 * female / row.total)
+  rowSums(temp[,-1])  # check that the rows sum to 100
+  
+  temp$ratio <- temp$female / temp$male
+  temp[order(-temp$ratio),]
+
+```
