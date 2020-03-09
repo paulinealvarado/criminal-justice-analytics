@@ -1,0 +1,622 @@
+---
+title: "Extracting Data from Text and Geocoding: Office-involved Shootings (OIS) in Philadelphia"
+author: "Pauline I. Alvarado"
+date: " Fall 2018"
+output: pdf_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(cache = TRUE)
+```
+
+
+This coding exercise was done in [University of Pennsylvania's Criminal Justice Data Science Course](https://github.com/gregridgeway/R4crim>) taught by Dr. Gregory Ridgeway. Code has been modified from course examples to fit personal learning style. Data consists of [PPD Service Area Shapefiles](https://www.opendataphilly.org/dataset/police-service-areas) and information scraped from the [PPD Officer-involved Shooting Website](http://phillypolice.com/ois). 
+
+Key skills: Web and document scraping, regular expressions, OpenStreetMap and ArcGIS geocoders, JSON, simple features, stack/match/merge data
+
+
+# Scraping OIS Data from PPD Webpage
+## Load packages and grab raw html 
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Packages
+    library(lubridate)
+    library(tm)
+    library(pdftools)
+    library(jsonlite)
+    library(ggmap)
+    library(sf)
+
+  # Grab raw html
+    ppd_website <- scan("http://phillypolice.com/ois", what = "", sep = "\n")
+    ppd_website <- gsub("\t", "", ppd_website)
+    head(ppd_website)
+    
+```
+
+
+## Create dataframe
+### Grab 2013-2018 data
+Make sure to view a sample row to determine how to clean up the data. Each table row starts with <tr-id="yyyy-####"]. The next row is the URL that contains PDF with detailed information. Date and address are in the 3rd and 4th row. respectively.
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  a <- ppd_website
+  i <- grep("id=\"2018-2954", a)
+  a[i + 0:9]
+  
+```
+
+
+
+### Extract, clean, and add 2013-2018 data to ois dataframe
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  i <- grep("id=\"201(3|4|5|6|7|8)", a)
+  
+  ois <- data.frame(id = gsub("<[^>]*>", "", a[i+1]),
+                    date = gsub("<[^>]*>", "", a[i+2]),
+                    location = gsub("<[^>]*>", "", a[i+3]),
+                    url = gsub("<td><a href=\"(.*)\" class=.*", "\\1", a[i+1]),
+                    stringsAsFactors = FALSE)
+  
+```
+
+
+
+### Extract, clean, and add  2007-2012 data to OIS dataframe
+Table for these years provide no incident date. Incident location is 2 elements after the <tr> tag.
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  i <- grep("id=\"20(07|08|09|10|11|12)", a)
+  
+  temp <- data.frame(id = gsub("<[^>]*>", "", a[i+1]),
+                    date = NA,
+                    location = gsub("<[^>]*>", "", a[i+2]),
+                    url = gsub("<td><a href=\"(.*)\" class=.*", "\\1", a[i+1]),
+                    stringsAsFactors = FALSE)
+  
+```
+
+
+
+### Stack "ois" and "temp" data
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  ois <- rbind(ois, temp) 
+  ois$id <- gsub(" ", "", ois$id) # clear out extra spaces
+  ois$url <- paste0("http://www.phillypolice.com", ois$url) # add full URL
+  ois[1:5,]
+  
+```
+
+
+### Consistent "id" variable format
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+  
+  # View rows that do not follow the ##-## convention
+    grep("^[^-]*$", ois$id, value = TRUE)
+
+  # Add hypens
+    ois$id[ois$id == "1630"] <- "16-30"
+    ois$id[ois$id == "1730"] <- "17-30"
+    ois$id[ois$id == "1822"] <- "18-22"
+    
+```
+
+
+
+#### View rows with missing id
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+  
+  subset(ois, id == "")
+    
+```
+
+
+#### Willows Avenue OIS
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+  
+  # View rows above and below
+    i <- grep("5100 block of Willows Avenue", ois$location)
+    ois[(i-1):(i+1),]
+    
+  # Check if PDFs are available for 14-13, 14-14, 14-15
+    a <- try(scan("http://www.phillypolice.com/assets/crime-maps-stats/officer-involved-shootings/14-13.pdf"))
+    a <- try(scan("http://www.phillypolice.com/assets/crime-maps-stats/officer-involved-shootings/14-14.pdf"))
+    a <- try(scan("http://www.phillypolice.com/assets/crime-maps-stats/officer-involved-shootings/14-15.pdf"))
+    
+  # Add 14-15 and URL to Willows Avenue OIS
+    ois$id[1+which(ois$id=="14-12")] <- "14-15"
+    ois$url[ois$id=="14-15"] <- "http://www.phillypolice.com/assets/crime-maps-stats/officer-involved-shootings/14-15.pdf"
+
+
+```
+
+
+
+#### View "B St and Ontario St" and "A St and Louden St"
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+  
+  # View rows above and below
+    i <- which(ois$id == "")
+    ois[c((i[1]-1):(i[1]+1), (i[2]-1):(i[2]+1)), 1:3]
+
+  # After checking possible PDfs, add missing ids, remove smart quotes, and fix URL
+    ois$id[1+which(ois$id=="10-60")] <- "10-65"
+    ois$location[ois$id=="10-65"] <- "B and Ontario St"
+    ois$url[ois$id=="10-65"] <- "http://www.phillypolice.com/assets/crime-maps-stats/officer-involved-shootings/2010/10-65%20B%20and%20Ontario%20St.pdf"
+
+    ois$id[1+which(ois$id=="10-74")] <- "10-76"
+    ois$location[ois$id=="10-76"] <- "A and Louden St"
+    ois$url[ois$id=="10-76"] <- "http://www.phillypolice.com/assets/crime-maps-stats/officer-involved-shootings/2010/10-76%20A%20and%20Louden%20St.pdf"
+    
+```
+
+
+
+### Clean up characters or extra spaces
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+  
+  # location column
+    ois$location <- gsub("&quot;", "", ois$location)
+    ois$location <- gsub("&amp;", "", ois$location)
+    ois$location <- gsub("^ *| *$", "", ois$location)
+    
+  # html
+    ois$url <- gsub("&amp;", "&", ois$url)
+    ois$url <- gsub(" ","%20",ois$url) # need %20 to indicate space
+    
+```
+
+
+
+### Reformat dates
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+  
+  ois$date <- mdy(ois$date)
+    
+```
+
+
+
+## View working ois dataframe
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+  
+  head(ois)
+    
+```
+
+
+
+# Extracting Data from PDF Files
+
+## View and isolate date from pdf
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+  # Raw text
+    pdf_file_0701 <- "http://www.phillypolice.com/assets/crime-maps-stats/officer-involved-shootings/2007/07-01%204400%20N%2017%20ST.pdf"
+    pdf_text_0701 <- pdf_text(pdf_file_0701)
+    pdf_text_0701 
+  
+  # Separate lines
+    a <- strsplit(pdf_text_0701, split = "\n")[[1]] # used only \n for mac can be a combo of \r\n
+    a
+    
+  # Apply mdy() to a
+    a <- mdy(a)
+    
+```
+
+
+
+## For-loops to extract text from pdfs
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+  
+  ois$text <- NA
+
+  for(i in 1:nrow(ois))
+  {
+    a <- pdf_text(ois$url[i])
+    a <- paste(a, collapse = "\n") # collapse into one page
+    ois$text[i] <- a
+  }
+
+    
+```
+
+
+
+## For-loops to extract dates and add to missing date fields 
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  for(i in which(is.na(ois$date)))
+  {
+    a <- strsplit(ois$text[i], split = "\n")[[1]]
+    a <- sort(mdy(a))[1]
+    
+    ois$date[i] <- as.character(a)
+  }
+
+    
+```
+
+
+
+## Check date column
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Find any missing fields
+    sum(is.na(ymd(ois$date)))
+
+  # Reconcile id number and year (e.g. id starting with 07 only have dates in 2007)
+    aggregate(year(date) ~ substr(id,1,2), data = ois, FUN = unique)
+    
+```
+
+
+
+# Geocoding OIS Locations
+
+## Automate the reformatting of URLs (
+
+### Open Street Maps Function
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  geocode_osm <- function(address)
+  {
+    a <- gsub(" +", "\\%20", address)
+    a <- paste0("http://nominatim.openstreetmap.org/search/", a, "?format=json&addressdetails=0&limit=1")
+    return( fromJSON(a) )
+  }
+    
+```
+
+
+
+###ArcGIS Function
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  geocode_arcgis <- function(address)
+  {
+    a <- gsub(" +", "\\%20", address)
+    a <- paste0("https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=json&singleLine=",a,"&outFields=Match_addr,Addr_type")
+    return( fromJSON(a) )
+  }
+    
+```
+
+
+
+## Clean up addresses
+
+### View OISs with missing locations
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  i <- which(ois$location %in% c("", "withheld", "Withheld"))
+  ois$text[i]
+    
+```
+
+
+
+### Add or correct missing locations
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  ois$location[ois$id=="16-18"] <- "3200 block of Wellington Street"
+  ois$location[ois$id=="10-06"] <- "Howard and Grange Street"
+  ois$location[ois$id=="08-06"] <- "200 block of Clapier Street"
+  ois$location[ois$id=="08-18"] <- "900 block of E. Slocum Street"
+  ois$location[ois$id=="08-30"] <- "700 block of W. Rockland Street"
+  ois$location[ois$id=="08-40"] <- "5400 Jefferson Street"
+  ois$location[ois$id=="08-60"] <- "3000 Memphis Street"
+  ois$location[ois$id=="08-70"] <- "1300 block of S. 29th Street"
+  ois$location[ois$id=="08-74"] <- "5600 block of N. Mascher Street"
+
+```
+
+
+
+### Other type of address corrections
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Insert "and" between cross streets
+    ois$location[ois$id=="07-19"] <- "51st and Arch" # needs "and"
+
+  # Shooting that didn't involve PPD officers
+    ois$text[ois$id=="17-08"] # shooting didn't involve PPD officers
+    ois <- subset(ois, id != "17-08")
+    
+  # Assign address with "blocks" at the midpoint, e.g. change "5400 block of Erdick St" to "5450 Erdick St"
+    a <- gsub("00 block( of)?", "50", a, ignore.case=TRUE)
+    a <- gsub("unit bl(oc)?k( of)?", "50", a, ignore.case=TRUE)
+
+  # Alleys
+    a <- gsub("Rear Alley of |near ", "", a, ignore.case = TRUE)
+    
+  # Add city and state to improve geocoding accuracy
+    a <- paste0(ois$location, ", Philadelphia, PA")
+
+```
+
+
+
+## Geocode locations
+
+### Run addresses through OpenStreetMap geocoder
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  ois_gc <- vector("list", nrow(ois)) #list to store geocoding results
+  for(i in 1:nrow(ois))
+  {
+    ois_gc[[i]] <- geocode_osm(a[i])
+    if(length(ois_gc[[i]]) == 0)
+    {
+      cat("Could not geocode address #", i, ":", a[i], "/n")
+    }
+  }
+
+```
+
+
+### Run failed addresses through ArcGIS geocoder
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  for (i in which(sapply(ois_gc, length) == 0)) 
+  {
+    ois_gc[[i]] <- geocode_arcgis(a[i])
+  }
+
+```
+
+
+
+### Reconcile formatting of OSM and ArcGIS results to extract longitude and latitude
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+  
+  # Function to extract longitude and latitude
+    b <- lapply(ois_gc, function(x)
+    {
+      if(is.null(x$candidates)) #OSM
+      {
+        a <- data.frame(lon = as.numeric(x$lon),
+                        lat = as.numeric(x$lat),
+                        score = as.numeric(x$importance),
+                        loctype = paste(x$class, x$type, sep = ":"),
+                        method = "osm",
+                        addressGeo = x$display_name,
+                        stringsAsFactors = FALSE)
+      } else # ArcGIS
+      { 
+        a <- data.frame(lon = x$candidates$location[1, "x"],
+                        lat = x$candidates$locatio[1, "y"],
+                        score = x$candidates$score[1],
+                        loctype = x$candidates$attributes$Addr_type[1],
+                        method = "arcgis",
+                        addressGeo = x$candidates$attributes$Match_addr[1],
+                        stringsAsFactors = FALSE)
+      }
+      return(a)
+    })
+
+  # Combine OSM and ArcGIS results
+    ois_gc <- do.call(rbind, b)
+    
+  # Add a column containing the original address
+    ois_gc <- cbind(ois_gc, addressOrig = a)
+    
+  # View dataframe
+    head(ois_gc)
+
+```
+
+
+
+### Double-check the longitude and latitude
+
+#### Check all coordinates and examine outliers
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+  
+  # View all longitude and latitude
+    stem(ois_gc$lat)
+    stem(ois_gc$lon)
+    
+  # View outliers
+    subset(ois_gc, lon < -80) # Philadelphia, MS
+    
+```
+
+
+
+#### Run outlier coordinates through ArcGIS geocoder
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+  
+  i <- which(ois_gc$lon < -80)
+  b <- lapply(ois_gc$addressOrig[i], geocode_arcgis)
+  
+  b <- lapply(b, function(x)
+  {
+    data.frame(lon = x$candidates$location[1, "x"],
+               lat = x$candidates$locatio[1, "y"],
+               score = x$candidates$score[1],
+               loctype = x$candidates$attributes$Addr_type[1],
+               method = "arcgis",
+               addressGeo = x$candidates$attributes$Match_addr[1],
+               stringsAsFactors = FALSE)
+  })
+  
+  b <- do.call(rbind, b)
+  
+  ois_gc[i, names(b)] <- b
+  ois_gc[i,]
+    
+```
+
+
+
+### Geocoding issues with location type
+Location type should be specific locations (office, shop, building, station, house, PointAddress, StreetAddress, StreetInt). Highway, neighborhood, city, Locality, and StreetName are too general. 
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+  
+  sort(table(ois_gc$loctype))
+
+    
+```
+
+
+
+### Map Officer Involved Shootings in Philadelphia
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+  
+  # Place all essential information in one data frame
+    ois$lon <- ois_gc$lon
+    ois$lat <- ois_gc$lat
+    
+  # Get map of Philly
+    map_philly <- get_map(c(-75.288486, 39.868285, -74.950965, 40.138251), source = "stamen")
+    ggmap(map_philly, extent = "normal") +
+      geom_point(aes(x = lon, y = lat), data = ois,
+                 color = "red",
+                 alpha = 0.5) +
+      theme(axis.title.x = element_blank(),
+            axis.title.y = element_blank())
+  
+```
+
+
+
+# Working with Shapefiles and Coordinate Systems
+
+## Plot OIS Data on the Philly Police Service Area (PSA) Maps
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+  
+  # Load shapefile and check map projection
+    map_ppd <- st_read("Boundaries_PSA/Boundaries_PSA.shp")
+    st_crs(map_ppd)
+    
+  # Plot
+    plot(st_geometry(map_ppd), axes = TRUE)
+    points(lat~lon, data = ois, col = rgb(1,0,0,0.5), pch = 16)
+  
+```
+
+
+## Exercise: Adding visual features to a map
+### Add PSA number labels & highlight PSA areas
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Plot PSA map
+    plot(st_geometry(map_ppd))
+    axis(side =1) # x-axis
+    axis(side = 2) # y-axis
+  
+  # Add number labels (center aligned within the polygon)
+    a <- st_coordinates(st_centroid(st_geometry(map_ppd))) # extract coordinates from polygon
+    text(a[,1], a[,2], map_ppd$PSA_NUM, cex = 0.5)
+    
+    
+  # Highlight PSA 77 & 183
+    text(a[,1], a[,2], map_ppd$PSA_NUM, cex = 0.5)
+    plot(st_geometry(subset(map_ppd, PSA_NUM == "077")),
+         add = TRUE, border = "red")
+    plot(st_geometry(subset(map_ppd, PSA_NUM == "183")),
+         add = TRUE, border = "green")
+    
+```
+
+
+
+### Add PSA number labels & highlight PSA areas
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Plot PSA map
+    plot(st_geometry(map_ppd))
+    axis(side =1) # x-axis
+    axis(side = 2) # y-axis
+  
+  # Add number labels (center aligned within the polygon)
+    a <- st_coordinates(st_centroid(st_geometry(map_ppd))) # extract coordinates from polygon
+    text(a[,1], a[,2], map_ppd$PSA_NUM, cex = 0.5)
+    
+    
+  # Highlight PSA 77 & 183
+    text(a[,1], a[,2], map_ppd$PSA_NUM, cex = 0.5)
+    plot(st_geometry(subset(map_ppd, PSA_NUM == "077")),
+         add = TRUE, border = "red")
+    plot(st_geometry(subset(map_ppd, PSA_NUM == "183")),
+         add = TRUE, border = "green")
+    
+```
+
+
+
+
+### Exercise: Spatial joins & highlight areas with the most OIS
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Indicate coordinate system for latitude and longitude values
+    ois <- st_as_sf(ois,
+                     coords = c("lon", "lat"),
+                     crs = st_crs("+init=epsg:4326")) #  World Geodetic System 1984 (used in GPS)
+
+  # Match each row in "ois" to each PSA polygon
+    lookup_psa <- st_join(ois, map_ppd[,"PSA_NUM"])
+    lookup_psa[1:3, c("id", "date", "location", "PSA_NUM", "geometry")]
+    
+  # Find top 3 PSAs with the most OIs
+    a <- rev(sort(table(lookup_psa$PSA)))
+    a
+    
+  # Plot
+    plot(st_geometry(map_ppd), axes = TRUE)
+    i <- which(lookup_psa$PSA_NUM == names(a)[1])
+    plot(st_geometry(lookup_psa[i,]), add = TRUE, col = "mediumpurple3", pch = 16)
+    i <- which(lookup_psa$PSA_NUM == names(a)[2])
+    plot(st_geometry(lookup_psa[i,]), add = TRUE, col = "steelblue1", pch = 16)
+    i <- which(lookup_psa$PSA_NUM == names(a)[3])
+    plot(st_geometry(lookup_psa[i,]), add = TRUE, col = "skyblue1", pch = 16)
+
+    
+    
+    
+```
+
+
+
+### Exercise: Tabulate OIS count by PSA and add color to the map
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # How many shootings in each PSA?
+    a <- table(lookup_psa$PSA_NUM)
+    
+  # Merge shooting counts into "map_ppd" data
+    i <- match(map_ppd$PSA_NUM, names(a))
+    map_ppd$nShoot <- a[i]
+    map_ppd[1:3,]
+    
+  # Historgram to view distribution of counts
+    hist(a, xlab = "Number of OIS", ylab = "Numbers of PSAs", main = "")
+    
+  # OIS counts into categories
+    a <- cut(map_ppd$nShoot,
+             breaks = c(0,1,5,10,15,20,25,30),
+             right = FALSE)
+
+  # Heat color for the map
+    col <- rev(heat.colors(7,1))
+    
+  # Assign colors to each PSA & add PSA labels
+    plot(st_geometry(map_ppd), col = col[as.numeric(a)], border = NA)
+    a <- st_coordinates((st_centroid(map_ppd)))
+    text(a[,1], a[,2], map_ppd$nShoot, cex = 0.5)
+    
+```
+
+
+
+
+
+
+
+
+
+
+
