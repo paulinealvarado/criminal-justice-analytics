@@ -1,0 +1,494 @@
+---
+title: "Working with SQL in R: Chicago Crime Incident Data (2001-present)"
+author: "Pauline I. Alvarado"
+date: "Fall 2018"
+output: pdf_document
+---
+
+This coding exercise was from [University of Pennsylvania's Criminal Justice Data Science Course](https://github.com/gregridgeway/R4crim>) taught by Dr. Gregory Ridgeway. Script has been modified from course examples to fit personal notation conventions. Data was taken from the [Chicago Data Portal](https://data.cityofchicago.org/Public-Safety/Crimes-2001-to-present/ijzp-q8t2).  
+
+# Clean Data
+
+## Load CSV File and Check Commas
+Values should be separated by semi-colon instead of commas. Extra commas in SQL can create a new column affecting the shape of the dataset.
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, results='hold'}
+
+  # Read first 1000 lines
+    infile  <- file("chicago-crime-2001-pres.csv", "r") # set up ability to read file
+    a <- readLines(infile, n=10000)
+    close(infile) # close the file
+
+  # Count commas for each row and check consistency
+    a[1]
+    regexpr(",",a[1])
+    gregexpr(",",a[1])
+
+    b <- sapply(gregexpr(",",a),length)
+    table(b)
+
+    i <- which(b == 21)
+    a[2] # 22 commas
+    a[i[1:4]]
+    
+    i <- which(b == 23)
+    a[2] # 22 commas
+    a[i[1:4]]
+    
+    i <- which(b == 24)
+    a[2] # 22 commas
+    a[i[1:4]]
+    
+```
+
+
+## Use regular expressions to clean data
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE, results='hold'}
+
+  # Set up input file and output file
+    infile  <- file("chicago-crime-2001-pres.csv",       'r')
+    outfile <- file("chicago-crime-2001-pres-clean.csv", 'w')
+    
+  # Fix variable names
+    a <- readLines(infile, n = 1)
+    a <- gsub(",Location$", "", a) # just delete ",Location" at end
+    a <- gsub(",", ";", a) # separate with ;
+    a <- gsub("[\\. ]", "", a)  # SQL doesn't like field names with .
+    writeLines(a, con=outfile)
+    flush(outfile) # flush what's been written to the storage media
+
+  # Loop through the rest of the data, 100,000 rows at a time
+    c.lines <- 0
+    system.time(
+      while ((length(a <- readLines(infile, n=100000)) >  0))
+      {
+        c.lines <- c.lines + length(a)
+        print(c.lines)
+        
+        # Remove the redundant "Location" coordinates
+          a0 <- gsub(",\"\\([[:print:]]*","", a) # Delete everything after parenthesis
+  
+        # Remove the extra comma for those missing Location
+         i <- which(a == a0)
+         a0[i] <- gsub(",$", "", a0[i])
+         a <- a0
+  
+        # Turn commas outside double quotes to semicolons
+        # Use ?= to "lookahead" for paired quotes
+          a <- gsub("(,)(?=(?:[^\"]|\"[^\"]*\")*$)", ";", a, perl = TRUE)
+
+        # Write the cleaned up data to storage
+          writeLines(a, con=outfile)
+      }
+    )
+    close(infile)
+    close(outfile)
+
+  # Check any problematic lines
+    a <- scan("chicago-crime-2001-pres-clean.csv", what="",sep="\n",skip=850000,nlines=3)
+    
+```
+
+
+
+# Build a SQL Database
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Load Package
+    library(sqldf)
+
+  # Import the cleaned data file into RSQLite
+    con <- dbConnect(SQLite(), dbname="chicagocrime.db")
+    a <- read.table("chicago-crime-2001-pres-clean.csv", sep = ";", nrows = 5, header = TRUE)
+    variabletypes <- dbDataType(con, a)
+    variabletypes["IUCR"] <- "TEXT"
+    
+    if(dbExistsTable(con, "crime")) dbRemoveTable(con, "crime")
+  
+    dbWriteTable(con, "crime",
+                 "chicago-crime-2001-pres-clean.csv",
+                 row.names = FALSE,
+                 header = TRUE,
+                 field.types = variabletypes,
+                 sep = ";") 
+    
+    # Check if the new "crime" table exists and view columns
+      dbListFields(con, "crime") 
+    
+    # Disconnect to finalize
+      dbDisconnect(con) 
+    
+```
+
+
+
+## Clean data via SQL query
+### Missing Values
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Convert blanks into NULL
+    con <- dbConnect(SQLite(), dbname="chicagocrime.db")
+    res <- dbSendQuery(con, "UPDATE crime 
+                             SET Ward = NULL 
+                             WHERE (Ward = '')")
+    res <- dbSendQuery(con, "UPDATE crime 
+                             SET District = NULL 
+                             WHERE (District = '')")
+    
+  # Convert empty coordinate values into NULL
+    res <- dbSendQuery(con, "UPDATE crime 
+                             SET XCoordinate = NULL
+                             WHERE (YCoordinate = '') OR (YCoordinate = 0)")
+    res <- dbSendQuery(con, "UPDATE crime 
+                             SET YCoordinate = NULL
+                             WHERE (YCoordinate = '') OR (YCoordinate = 0)")
+    
+  # Round up figures close to 0
+    res <- dbSendQuery(con, "UPDATE crime
+                             SET Latitude = NULL
+                             WHERE (Latitude = '') OR (ABS(Latitude-0.0)<0.01)")
+    res <- dbSendQuery(con, "UPDATE crime
+                             SET Longitude = NULL
+                             WHERE (Longitude = '') OR (ABS(Longitude-0.0)<0.01)")
+    
+
+```
+
+
+### Remove coordinates outside of Chicago
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  res <- dbSendQuery(con, "UPDATE crime 
+                           SET Longitude = NULL
+                           WHERE Longitude < -88")
+  res <- dbSendQuery(con, "UPDATE crime 
+                           SET Latitude = NULL
+                           WHERE Latitude < 41")
+  
+  dbDisconnect(con) 
+
+```
+
+
+
+# Create IUCR Lookup Table
+Primary crime type, FBI code, and IUCR are redundant in one table. Put in separate tables but link all of the information.
+## Remove redundant information
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Load Packages
+    library(gsubfn)
+    library(proto)
+    library(RSQLite)
+
+  # Eliminate duplicate rows
+    con <- dbConnect(SQLite(), dbname="chicagocrime.db")
+    res <- dbSendQuery(con, "SELECT DISTINCT IUCR, PrimaryType, FBICode
+                             FROM crime")
+    a <- fetch(res, n = -1)
+    dbClearResult(res)
+    
+  # Check that each IUCR is linked to a unique value primary crime type and FBI code
+    sort(table(a$IUCR))
+    subset(a, IUCR %in% 2091:2093)
+    
+```
+
+
+
+### Research discrepancy with FBI codes
+#### Narcotics
+IUCR codes 2091 (forfeit property), 2092 ("soliciting narcotics on a publicway)" and 2093 ("found suspect narctics") are related to narcotics. Accompanying FBI codes include 18 ("crimes of production, sale, use of drugs) and 26 ("miscellaneous"). Usage of FBI Code 26 phases out after 2015.
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  res <- dbSendQuery(con, "SELECT DISTINCT IUCR,
+                                         FBICode,
+                                         SUBSTR(Date,7,4) AS year
+                         FROM crime
+                         WHERE IUCR='2091' OR IUCR='2092' OR IUCR='2093'
+                         ORDER BY IUCR,FBICode, year")
+  fetch(res, n = -1)
+  dbClearResult(res)
+  
+```
+
+
+
+#### Offenses involving children
+IUCR crimes 1710, 1715, 1725, 1755, and 1780 are offenses that involve children. Before 2016, assigned as FBI Code 26 and recently coded as FBI Code 20 ("offense against family").
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  res <- dbSendQuery(con, "SELECT COUNT(*) as crimecount,
+                                  IUCR,
+                                  FBICode,
+                                  PrimaryType,
+                                  SUBSTR(Date,7,4) AS year
+                         FROM crime
+                         WHERE IUCR='1710' OR IUCR='1715' OR IUCR='1725' OR IUCR='1755' OR IUCR='1780'
+                         GROUP BY IUCR, PrimaryType, FBICode, year")
+  fetch(res, n = -1)
+  dbClearResult(res)
+  
+```
+
+
+#### Possession of incendiary devices
+IUCR crimes 1030 and 1035 are offenses that involve possession of incendiary devices. Recently coded as arson instead of miscellaneous.
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  res <- dbSendQuery(con, "SELECT DISTINCT IUCR,
+                                         FBICode,
+                                         SUBSTR(Date,7,4) AS year
+                         FROM crime
+                         WHERE IUCR='1030' OR IUCR='1035'
+                         ORDER BY IUCR,FBICode, year")
+  fetch(res, n = -1)
+  dbClearResult(res)
+  
+```
+
+
+
+
+#### "NON-CRIMINAL" values within PrimaryType
+Extra spaces were removed in the phrase.
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  res <- dbSendQuery(con, "SELECT COUNT(*) as crimecount,
+                                  IUCR,
+                                  FBICode,
+                                  PrimaryType,
+                                  SUBSTR(Date,7,4) AS year
+                         FROM crime
+                         WHERE IUCR='5114'
+                         GROUP BY IUCR, PrimaryType, FBICode, year")
+  fetch(res, n = -1)
+  dbClearResult(res)
+  
+```
+
+
+
+## Create IUCR, PrimaryType, FBICode lookup table within Chicago crime database
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  if(dbExistsTable(con, "iucr")) dbRemoveTable(con, "iucr")
+
+  # import dataframe into SQLite
+    dbWriteTable(con, "iucr", a, row.names = FALSE)
+    dbListFields(con, "iucr")
+    
+  # check if the table is correct
+    fetch(dbSendQuery(con, "SELECT * from iucr LIMIT 5"))
+    
+  # clear rows with redudant and outdated FBI codes and removal of spaces for IUCR 5114
+    res <- dbSendQuery(con, "DELETE from iucr
+                             WHERE (FBICode = '26') AND
+                                    (iucr IN ('1030', '1035',
+                                             '1710', '1715', '1725', '1780',
+                                             '2091', '2092', '2093'))")
+    res <- dbSendQuery(con, "DELETE from iucr
+                             WHERE  (iucr = '5114') AND
+                                    (PrimaryType = 'NON - CRIMINAL')")
+    
+  # check that database has two tables
+    dbListTables(con)
+    
+```
+
+
+
+## Add dates in standard format to the database
+### View date-related values
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  library(lubridate)
+
+  # View current format
+    res <- dbSendQuery(con, "SELECT ID, Date FROM crime")
+    data <- fetch(res, n = -1)
+    dbClearResult(res)
+    data[1:5,]
+  
+  # View variable classification
+    res <- dbSendQuery(con, "PRAGMA table_info(crime)")
+    fetch(res, n = -1)
+    dbClearResult(res)
+    
+```
+
+
+
+### Transform dates in standard format
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  data$datefix <- mdy_hms(data$Date)
+  data$datefix <- as.character(data$datefix)
+  data[1:5,]
+  data$Date <- NULL #delete original date from the dataframe
+  
+  # Create new date table
+     if(dbExistsTable(con, "DateFix")) dbRemoveTable(con, "DateFix")
+    dbWriteTable(con, "DateFix", data, row.names = FALSE)
+    dbListTables(con)
+    
+   
+```
+
+
+
+
+# Finalize the crime table with complete information
+## Create a new crime table
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+    
+  # Rename "crime" table to "crime_old" (will be deleted)
+    if(dbExistsTable(con, "crime_old")) dbRemoveTable(con, "crime_old")
+    res <- dbSendQuery(con, "ALTER TABLE crime RENAME TO crime_old")
+    dbClearResult(res)
+    
+  # Create new "crime" table
+    a <- dbListFields(con, "crime_old")
+    paste(a, collapse = ",")
+    
+    res <- dbSendQuery(con, "CREATE TABLE crime AS
+                             SELECT crime_old.ID,
+                                    crime_old.CaseNumber,
+                                    DateFix.datefix AS date,
+                                    crime_old.Block,
+                                    crime_old.IUCR,
+                                    crime_old.Description,
+                                    crime_old.LocationDescription,
+                                    crime_old.Arrest,
+                                    crime_old.Domestic,
+                                    crime_old.Beat,
+                                    crime_old.District,
+                                    crime_old.Ward,
+                                    crime_old.CommunityArea,
+                                    crime_old.XCoordinate,
+                                    crime_old.YCoordinate,
+                                    crime_old.Latitude,
+                                    crime_old.Longitude
+                              FROM  crime_old, DateFix
+                              WHERE crime_old.ID=DateFix.ID") # link two tables together
+    dbClearResult(res)
+    
+  # View new table
+    res <- dbSendQuery(con, "SELECT *
+                             FROM crime")
+    fetch(res, n = 10)
+    dbClearResult(res)
+    
+  # Delete crime_old and DateFix
+    res <- dbSendQuery(con, "DROP TABLE crime_old")
+    dbClearResult(res)
+    res <- dbSendQuery(con, "DROP TABLE DateFix")
+    dbListTables(con)
+    
+  # Clean up unused space
+    system.time(res <- dbSendQuery(con, "VACUUM"))
+    dbClearResult(res)
+
+```
+
+
+
+# Join data across tables
+## Create an "index"
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  timeIUCRjoin <- system.time(
+    {
+      res <- dbSendQuery(con, "SELECT crime.CaseNumber,
+                                      iucr.FBIcode
+                               FROM crime,
+                                    iucr
+                               WHERE crime.iucr = iucr.iucr")
+      data <- fetch(res, n = -1)
+    })
+  dbClearResult(res)
+  data[1:10,]
+
+```
+
+
+## Use INNER JOIN
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Tabulate number of Part 1 crimes occuring in each year
+    res <- dbSendQuery(con, "SELECT iucr.PrimaryType AS     type,
+                                    STRFTIME('%Y', date) AS year,
+                                    COUNT(*) AS             crimecount
+                             FROM crime
+                                  INNER JOIN iucr
+                                  ON crime.iucr = iucr.iucr
+                              WHERE FBICode IN ('01A', '02', '03', '04A', '04B', 
+                                                '05', '06', '07', '09')
+                              GROUP BY type, year")
+    fetch(res, n = -1)
+    dbClearResult(res)
+
+```
+
+
+
+# SUBQUERIES
+Results from one query as part of another query
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  # Determine whether a block shows up multiple times in initial query
+    res <- dbSendQuery(con, "SELECT COUNT(*), Block
+                             FROM
+                                (SELECT DISTINCT Block,
+                                                 XCoordinate,
+                                                 YCoordinate
+                                 FROM crime)
+                             GROUP BY Block")
+    fetch(res, n = 20)
+    dbClearResult(res)
+    
+```
+
+
+
+
+# Exercises
+## Which district has the most thefts?
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+  res <-dbSendQuery(con, "SELECT    COUNT(*) as crimecount,
+                                    District
+                          FROM      crime
+                                    INNER JOIN iucr ON iucr.iucr
+                          WHERE     iucr.PrimaryType = 'THEFT'
+                          GROUP BY  District")
+  a <- fetch(res, n = -1)
+  dbClearResult(res)
+  
+  a[which.max(a$crimecount), ]
+
+```
+
+
+
+## Count number of assaults, since 2010, that occured on Fridays and Saturdays, after 6pm
+Report date, day of week, hou of the day, and year.
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+    res <- dbSendQuery(con, "SELECT   COUNT(*),
+                                      DATE(crime.Date) AS crimedate,
+                                      CAST(STRFTIME('%w', crime.Date) AS INTEGER) AS weekday,
+                                      CAST(STRFTIME('%H', crime.Date) AS INTEGER) AS hour,
+                                      CAST(STRFTIME('%Y', crime.Date) AS INTEGER) AS year
+                            FROM      crime
+                                          INNER JOIN iucr ON crime.iucr = iucr.iucr
+                            WHERE     iucr.PrimaryType = 'ASSAULT' AND
+                                      year >= 2010 AND
+                                      (weekday >= 5) AND (weekday <= 6) AND
+                                      hour >= 18
+                            GROUP BY  crimedate, weekday, hour, year")
+  fetch(res, n = -1)
+  dbClearResult(res)
+                           
+                     
+```
+
